@@ -1,0 +1,148 @@
+---
+title: "(Use {ggirafe} with Shiny and trigger custom events)"
+author: "Godfrey"
+date: "2023-02-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(ggiraph)
+library(tidyverse)
+library(patchwork)
+library(shiny)
+library(gt)
+```
+
+
+## Prep work for the Shiny apps
+
+```{r}
+dat <- gapminder::gapminder |> 
+  janitor::clean_names() |> 
+  mutate(
+    # ID that is shared for boxplots (this one uses factors, i.e. numbers, as ID instead of continents)
+    id = levels(continent)[as.numeric(continent)],
+    continent = forcats::fct_reorder(continent, life_exp)
+  )
+color_palette <- thematic::okabe_ito(5)
+names(color_palette) <- unique(dat$continent)
+base_size <- 40
+```
+
+
+
+## Onclick with setInputValue
+
+
+```{r}
+ui <- fluidPage(
+  theme = bslib::bs_theme(
+    # Colors (background, foreground, primary)
+    bg = 'white', 
+    fg = '#06436e', 
+    primary = colorspace::lighten('#06436e', 0.3),
+    
+    # Fonts (Use multiple in case a font cannot be displayed)
+    base_font = c('Source Sans Pro',  'Lato', 'Merriweather', 'Roboto Regular', 'Cabin Regular'),
+    heading_font = c('Oleo Script', 'Prata', 'Roboto', 'Playfair Display', 'Montserrat'),
+    font_scale = 1.75
+  ),
+  h1('Hello!'),
+  sidebarLayout(
+    sidebarPanel = sidebarPanel(
+      selectInput(
+        'selected_year',
+        'What year do you want to look at?',
+        choices = unique(dat$year)
+      )
+    ),
+    mainPanel = mainPanel(
+      girafeOutput('girafe_output', height = 600),
+      verbatimTextOutput('last_clicked'),
+      verbatimTextOutput('selections')
+    )
+  )
+)
+server <- function(input, output, session) {
+  
+  dat_year <- reactive({dat |> filter(year == input$selected_year)})
+  
+  last_click <- reactive({
+    input$last_click
+  })
+  
+  clicks_list <- reactiveVal()
+  
+  observe({
+    clicks_list(c(last_click(), clicks_list()))
+    print(clicks_list())
+  }) |> bindEvent(last_click())
+  
+  output$last_clicked <- renderPrint({
+    req(clicks_list())
+    glue::glue('Clicked: {paste(clicks_list(), collapse = " ")}')
+  })
+  
+  output$selections <- renderPrint({
+    req(input$girafe_output_selected)
+    glue::glue('Selected: {paste(input$girafe_output_selected, collapse = " ")}')
+    
+  })
+  
+  
+  
+  
+  
+output$girafe_output <- renderGirafe({
+    box_plot <- dat_year() |> 
+      ggplot(aes(x = life_exp, y = continent, fill = continent, data_id = id)) +
+      geom_boxplot_interactive(
+        aes(onclick = glue::glue('
+          Shiny.setInputValue("last_click", " ");
+          Shiny.setInputValue("last_click", "{continent}");'
+        )),
+        position = position_nudge(y = 0.25), 
+        width = 0.5
+      ) +
+      geom_point_interactive(
+        aes(col = continent, data_id = seq_along(country)),
+        position = position_nudge(y = -0.2),
+        size = 11,
+        shape = '|',
+        alpha = 0.75
+      ) +
+      scale_fill_manual(values = color_palette) +
+      scale_color_manual(values = color_palette) +
+      labs(
+        x = 'Life expectancy (in years)',
+        y = element_blank(),
+        title = glue::glue('Distribution of Life Expectancy in {input$selected_year}')
+      ) +
+      theme_minimal(base_size = base_size) +
+      theme(
+        text = element_text(color = 'grey20'),
+        legend.position = 'none',
+        panel.grid.minor = element_blank(),
+        plot.title.position = 'plot'
+      ) 
+    
+    girafe(
+      ggobj = box_plot,
+      options = list(
+        opts_hover(css = ''),
+        opts_sizing(rescale = TRUE),
+        opts_hover_inv(css = "opacity:0.1;")
+      ),
+      height_svg = 12,
+      width_svg = 25
+    )
+    
+  })
+  
+}
+shinyApp(ui, server)
+```
